@@ -1,0 +1,36 @@
+name: Test and release Linux
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: write
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Test Linux preview
+        run: python3 -m unittest discover -s tests -v
+      - name: Package, smoke-test and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="$(python3 jarvis.py --version | awk '{print $3}')"
+          tag="v$version"
+          if gh release view "$tag" >/dev/null 2>&1; then exit 0; fi
+          bundle="jarvis-linux-$version"
+          mkdir -p "$RUNNER_TEMP/$bundle"
+          cp jarvis.py extra_commands.py desktop_notes.py README.md LICENSE "$RUNNER_TEMP/$bundle/"
+          tar -C "$RUNNER_TEMP" -czf "$bundle.tar.gz" "$bundle"
+          mkdir -p "$RUNNER_TEMP/smoke"
+          tar -C "$RUNNER_TEMP/smoke" -xzf "$bundle.tar.gz"
+          printf 'запиши заметку Linux\nпокажи заметки\nвыход\n' |
+            XDG_DATA_HOME="$RUNNER_TEMP/smoke/data" python3 "$RUNNER_TEMP/smoke/$bundle/jarvis.py" |
+            grep -F '1. Linux'
+          sha256sum "$bundle.tar.gz" > SHA256SUMS.txt
+          gh release create "$tag" "$bundle.tar.gz" SHA256SUMS.txt --target "$GITHUB_SHA" --prerelease \
+            --title "JARVIS Linux $version" --notes 'Первый выпуск для терминала Linux. Локальные заметки, таймеры и текстовый чат через Ollama.'
