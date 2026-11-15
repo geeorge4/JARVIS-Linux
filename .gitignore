@@ -1,2 +1,9 @@
 __pycache__/
 *.pyc
+.venv/
+speech-models/
+round-drops/
+xtts-runtime/
+xtts-model/
+xtts-reference.wav
+libjarvis_audio.so

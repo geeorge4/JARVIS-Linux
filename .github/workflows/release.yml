@@ -2,18 +2,39 @@ name: Test and release Linux
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
 permissions:
-  contents: write
+  contents: read
 jobs:
-  linux:
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
-      - name: Test Linux preview
-        run: python3 -m unittest discover -s tests -v
+          python-version: '3.12'
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-tk libportaudio2 xvfb xauth
+          python3 -m pip install -r requirements.txt
+      - name: Test Linux desktop and commands
+        run: |
+          python3 -m compileall -q .
+          xvfb-run -a python3 -m unittest discover -s tests -v
+  publish:
+    if: github.event_name == 'push'
+    needs: test
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install packaging dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-tk
       - name: Package, smoke-test and publish
         env:
           GH_TOKEN: ${{ github.token }}
@@ -24,7 +45,8 @@ jobs:
           if gh release view "$tag" >/dev/null 2>&1; then exit 0; fi
           bundle="jarvis-linux-$version"
           mkdir -p "$RUNNER_TEMP/$bundle"
-          cp jarvis.py extra_commands.py desktop_notes.py README.md LICENSE "$RUNNER_TEMP/$bundle/"
+          cp -r -- *.py *.md *.sh *.txt LICENSE assets native installer "$RUNNER_TEMP/$bundle/"
+          rustc --crate-type cdylib -O native/audio.rs -o "$RUNNER_TEMP/$bundle/libjarvis_audio.so"
           tar -C "$RUNNER_TEMP" -czf "$bundle.tar.gz" "$bundle"
           mkdir -p "$RUNNER_TEMP/smoke"
           tar -C "$RUNNER_TEMP/smoke" -xzf "$bundle.tar.gz"
@@ -33,4 +55,4 @@ jobs:
             grep -F '1. Linux'
           sha256sum "$bundle.tar.gz" > SHA256SUMS.txt
           gh release create "$tag" "$bundle.tar.gz" SHA256SUMS.txt --target "$GITHUB_SHA" --prerelease \
-            --title "JARVIS Linux $version" --notes 'Первый выпуск для терминала Linux. Локальные заметки, таймеры и текстовый чат через Ollama.'
+            --title "JARVIS Linux $version" --notes 'Графический рабочий стол, локальные Piper и Whisper, CS2, War Thunder, OCR, журнал systemd и запуск приложений Linux. См. README для настройки и ограничений Wayland.'

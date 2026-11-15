@@ -1,8 +1,44 @@
-"""Portable notes and timer commands from JARVIS."""
+"""Дополнительные локальные команды без генерации shell-кода."""
+from linux_desktop import DATA_DIR, launch, open_target, screenshot, settings, user_folder
+import datetime as dt
 import math
+import os
+from pathlib import Path
 import re
+import shutil
+import subprocess
 import threading
 import time
+import urllib.parse
+import webbrowser
+from desktop_notes import Notes
+
+SITES={'ютуб':'https://www.youtube.com','гугл':'https://www.google.com',
+ 'яндекс':'https://ya.ru','википедию':'https://ru.wikipedia.org','гитхаб':'https://github.com',
+ 'роблокс':'https://www.roblox.com','твич':'https://www.twitch.tv','дискорд сайт':'https://discord.com/app',
+ 'телеграм сайт':'https://web.telegram.org','почту gmail':'https://mail.google.com',
+ 'яндекс музыку':'https://music.yandex.ru','яндекс карты':'https://yandex.ru/maps',
+ 'гугл переводчик':'https://translate.google.com','гугл диск':'https://drive.google.com'}
+SETTINGS={'настройки звука':'sound','настройки микрофона':'privacy-microphone',
+ 'настройки экрана':'display','настройки блютуза':'bluetooth','настройки вайфая':'network-wifi',
+ 'настройки сети':'network','настройки мыши':'mousetouchpad','настройки клавиатуры':'typing',
+ 'настройки громкости':'apps-volume','настройки персонализации':'personalization',
+ 'настройки приложений':'appsfeatures','настройки уведомлений':'notifications',
+ 'настройки питания':'powersleep'}
+FOLDERS={'фото':'Pictures','видео':'Videos','музыку':'Music','загрузки':'Downloads',
+ 'документы':'Documents','рабочий стол':'Desktop'}
+MEDIA={'громче':0xAF,'тише':0xAE,'выключи звук':0xAD,'включи звук':0xAD,
+ 'переключи звук':0xAD,'музыка пауза':0xB3,'музыка играть':0xB3,
+ 'следующий трек':0xB0,'предыдущий трек':0xB1,'останови музыку':0xB2}
+# Команды mute и play/pause — переключатели, как мультимедийные клавиши.
+FIXED=['который час','какая дата','какой день недели','сколько места на диске',
+ 'информация о компьютере','сколько оперативной памяти','заряд батареи',
+ 'открой диспетчер задач','открой сведения о системе','сделай скриншот',
+ 'открой папку скриншотов','запиши заметку купить молоко','покажи заметки',
+ 'найди заметку молоко','поставь таймер на 5 минут','список таймеров','отмени таймер 1','отмени таймеры',
+ 'найди в интернете Python','найди на ютубе музыка']
+CATALOG=([f'открой {n}' for n in SITES]+[f'открой {n}' for n in SETTINGS]+
+         [f'открой папку {n}' for n in FOLDERS]+list(MEDIA)+FIXED)
 
 def norm(text):return re.sub(r'\s+',' ',text.lower().replace('ё','е')).strip(' .!?')
 
@@ -16,26 +52,74 @@ TIMER_NUMBERS = {
 TIMER_NUMBER_WORD = re.compile(r'\b(?:' + '|'.join(TIMER_NUMBERS) + r')\b')
 
 class Extras:
-    def __init__(self, notify, note_store):
-        self.notify = notify
-        self.timers = {}
-        self.lock = threading.Lock()
-        self.next_id = 1
-        self.note_store = note_store
+    def __init__(self,notify):
+        self.notify=notify;self.started=time.monotonic();self.timers={};self.lock=threading.Lock();self.next_id=1
+        self.data=DATA_DIR
+        self.note_store=Notes(self.data/'notes.json')
 
     def notes(self):
         return self.note_store.list()
 
     def recognized(self,text):
         s=norm(text)
-        return (s in ('покажи заметки', 'список таймеров', 'отмени таймеры') or
-                s.startswith(('запиши заметку ', 'найди заметку ', 'поставь таймер ',
-                              'таймер ', 'отмени таймер ')))
+        return (s in CATALOG or s in ('громкость выше','громкость ниже','дата','время','снимок экрана') or
+          s.startswith(('запиши заметку ','найди заметку ','поставь таймер ','таймер ','отмени таймер ',
+                        'найди в интернете ','найди на ютубе ','поиск в интернете ')))
 
     def handle(self,text):
         s=norm(text)
+        if s.startswith('открой '):
+            name=s[7:]
+            if name in SITES:webbrowser.open(SITES[name]);return 'Открываю сайт.'
+            if name in SETTINGS:
+                settings()
+                return 'Открываю параметры рабочего стола.'
+            if name.startswith('папку ') and name[6:] in FOLDERS:
+                path=user_folder(FOLDERS[name[6:]])
+                if not path.is_dir():return 'Папка не найдена по стандартному пути: '+str(path)
+                open_target(path);return 'Открываю папку.'
+        if s in MEDIA or s in ('громкость выше','громкость ниже'):
+            key=MEDIA.get(s,0xAF if s=='громкость выше' else 0xAE)
+            if key in (0xAF, 0xAE):
+                direction = '+' if key == 0xAF else '-'
+                launch(('wpctl','set-volume','-l','1.0','@DEFAULT_AUDIO_SINK@',f'5%{direction}'),
+                       ('pactl','set-sink-volume','@DEFAULT_SINK@',f'{direction}5%'))
+            elif key == 0xAD:
+                state = {'выключи звук': '1', 'включи звук': '0'}.get(s, 'toggle')
+                launch(('wpctl','set-mute','@DEFAULT_AUDIO_SINK@',state),
+                       ('pactl','set-sink-mute','@DEFAULT_SINK@',state))
+            else:
+                action = {0xB0: 'next', 0xB1: 'previous', 0xB2: 'stop', 0xB3: 'play-pause'}[key]
+                launch(('playerctl', {'музыка пауза': 'pause', 'музыка играть': 'play'}.get(s, action)))
+            return 'Отправил мультимедийную команду.'
+        now=dt.datetime.now()
+        if s in ('который час','время'):return now.strftime('%H:%M')
+        if s in ('какая дата','дата'):return now.strftime('%d.%m.%Y')
+        if s=='какой день недели':return ['Понедельник','Вторник','Среда','Четверг','Пятница','Суббота','Воскресенье'][now.weekday()]
+        if s=='сколько места на диске':
+            disk=shutil.disk_usage(Path.home().anchor);return f'На диске свободно {disk.free/2**30:.1f} ГБ из {disk.total/2**30:.1f} ГБ.'
+        if s in ('информация о компьютере','сколько оперативной памяти','заряд батареи'):
+            import sys
+            sys.path.insert(0,str(self.data/'app-deps'))
+            import psutil,platform
+            if s=='информация о компьютере':return f'{platform.system()} {platform.release()}, процессор: {platform.processor()}, логических ядер: {os.cpu_count()}.'
+            if s=='сколько оперативной памяти':
+                ram=psutil.virtual_memory();return f'ОЗУ: {ram.total/2**30:.1f} ГБ, доступно {ram.available/2**30:.1f} ГБ.'
+            battery=psutil.sensors_battery()
+            return (f'Заряд {battery.percent:.0f}%, '+('питание подключено.' if battery.power_plugged else 'работа от батареи.')) if battery else 'Батарея не обнаружена.'
+        if s in ('открой диспетчер задач','открой сведения о системе'):
+            if s=='открой диспетчер задач':
+                launch(('gnome-system-monitor',), ('plasma-systemmonitor',), ('xfce4-taskmanager',), ('mate-system-monitor',))
+            else:
+                launch(('kinfocenter',), ('hardinfo2',), ('hardinfo',), ('gnome-control-center', 'info-overview'))
+            return 'Отправил команду запуска.'
+        screenshots=self.data/'Screenshots'
+        if s=='открой папку скриншотов':screenshots.mkdir(parents=True,exist_ok=True);open_target(screenshots);return 'Открываю скриншоты.'
+        if s in ('сделай скриншот','снимок экрана'):
+            screenshots.mkdir(parents=True,exist_ok=True);path=screenshots/(now.strftime('%Y-%m-%d_%H-%M-%S_%f')+'.png')
+            screenshot(path);return 'Скриншот сохранён: '+str(path)
         if s.startswith('запиши заметку '):
-            value=text.strip().split(maxsplit=2)[2]
+            value=text.strip()[len('запиши заметку '):].strip()
             if not value:return 'Продиктуй текст заметки.'
             self.note_store.add(value)
             return 'Заметка записана.'
@@ -43,6 +127,10 @@ class Extras:
             notes=self.notes();query=s[len('найди заметку '):] if s.startswith('найди заметку ') else ''
             matches=[n for n in notes if isinstance(n,dict) and query in norm(str(n.get('text','')))][-10:]
             return '\n'.join(f"{i+1}. {n['text']}" for i,n in enumerate(matches)) or 'Заметки не найдены.'
+        if s.startswith(('найди в интернете ','поиск в интернете ','найди на ютубе ')):
+            youtube=s.startswith('найди на ютубе ');prefix='найди на ютубе ' if youtube else ('найди в интернете ' if s.startswith('найди в интернете ') else 'поиск в интернете ')
+            query=text.strip()[len(prefix):].strip()
+            webbrowser.open(('https://www.youtube.com/results?search_query=' if youtube else 'https://www.google.com/search?q=')+urllib.parse.quote_plus(query));return 'Открываю результаты поиска.'
         if s.startswith(('таймер ','поставь таймер ')):
             s = TIMER_NUMBER_WORD.sub(lambda match: TIMER_NUMBERS[match[0]], s)
             duration = re.sub(r'^(?:поставь )?таймер (?:на )?', '', s)

@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 from extra_commands import Extras
 
@@ -7,7 +7,7 @@ from extra_commands import Extras
 class TimerCommandTests(unittest.TestCase):
     def setUp(self):
         self.notifications = []
-        self.extras = Extras(self.notifications.append, Mock())
+        self.extras = Extras(self.notifications.append)
         self.addCleanup(self.extras.close)
         timer_patch = patch('extra_commands.threading.Timer')
         self.timer_class = timer_patch.start()
